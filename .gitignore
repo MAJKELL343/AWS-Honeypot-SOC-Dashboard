@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Streamlit
+.streamlit/
+
+# Duże dane (jeśli plik waży > 100MB)
+AWS_Honeypot_marx-geo.csv
