@@ -11,6 +11,8 @@ PORT_MAP = {
 
 @st.cache_data
 def get_processed_data(file_path: str) -> pd.DataFrame:
+    if file_path.endswith(".csv"):
+        file_path += ".gz"
     cols = ['datetime', 'src', 'proto', 'dpt', 'country', 'latitude', 'longitude']
     try:
         df = pd.read_csv(file_path, usecols=cols)

@@ -13,7 +13,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-df = data_loader.get_processed_data("AWS_Honeypot_marx-geo.csv")
+df = data_loader.get_processed_data("AWS_Honeypot_marx-geo.csv.gz")
 
 if df.empty:
     st.error("Błąd ładowania pliku CSV. Upewnij się, że plik jest w głównym folderze.")
