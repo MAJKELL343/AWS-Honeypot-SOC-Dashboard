@@ -18,12 +18,20 @@ def style_chart(fig):
     return fig
 
 def plot_attack_map(df, lat=20, lon=0, zoom=1):
-    map_df = df.dropna(subset=['latitude', 'longitude'])
+    # 1. Usuwamy całkowicie puste rzędy
+    map_df = df.dropna(subset=['latitude', 'longitude']).copy()
+    
+    # 2. TARCZA OCHRONNA: Zostawiamy tylko poprawne współrzędne kuli ziemskiej
+    map_df = map_df[
+        (map_df['latitude'] >= -90) & (map_df['latitude'] <= 90) &
+        (map_df['longitude'] >= -180) & (map_df['longitude'] <= 180)
+    ]
     
     transition_params = {
         "transitionDuration": 1500,
         "transitionInterp": FlyToInterpolator() if HAS_FLY_TO else None
     }
+# ... (reszta funkcji pozostaje bez zmian)
 
     view_state = pdk.ViewState(
         latitude=lat, longitude=lon, zoom=zoom,
@@ -68,3 +76,39 @@ def plot_time_heatmap(df):
                     labels=dict(x="Godzina", y="Dzień", color="Ataki"),
                     title="Intensywność czasowa")
     return style_chart(fig)
+
+
+def plot_attack_trend(df):
+    """Generuje interaktywny wykres liniowy przedstawiający trend liczby ataków w czasie."""
+    if df.empty:
+        return px.line(title="Brak danych")
+    
+    # Grupowanie danych po samej dacie (rok-miesiąc-dzień) i zliczanie wystąpień
+    trend_df = df.groupby(df['datetime'].dt.date).size().reset_index(name='Liczba ataków')
+    trend_df.columns = ['Data', 'Liczba ataków']
+    trend_df = trend_df.sort_values('Data')
+    
+    # Tworzenie wykresu liniowego Plotly
+    fig = px.line(
+        trend_df,
+        x='Data',
+        y='Liczba ataków',
+        title='Trend intensywności ataków w osi czasu',
+        labels={'Data': 'Data zdarzenia', 'Liczba ataków': 'Suma zarejestrowanych ataków'},
+        markers=True
+    )
+    
+    # Stylizacja wykresu pod ciemny motyw interfejsu
+    fig.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        xaxis_gridcolor='#30363d',
+        yaxis_gridcolor='#30363d',
+        title_font_size=18,
+        hovermode='x unified'
+    )
+    
+    fig.update_traces(line_color='#00e5ff', line_width=3)
+    
+    return fig
