@@ -19,11 +19,25 @@ st.markdown("""
 
 # --- POŁĄCZENIE Z REDIS ---
 try:
-    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    # Pobieramy dane z "Sekretów" Streamlita. Jeśli ich nie ma, używamy ustawień lokalnych.
+    redis_host = st.secrets.get("REDIS_HOST", "localhost")
+    redis_port = st.secrets.get("REDIS_PORT", 6379)
+    redis_password = st.secrets.get("REDIS_PASSWORD", None)
+
+    r = redis.Redis(
+        host=redis_host,
+        port=redis_port,
+        password=redis_password,
+        ssl=True if redis_password else False, # Upstash wymaga bezpiecznego połączenia SSL
+        db=0,
+        decode_responses=True
+    )
     r.ping()
     global_views = r.incr('soc_dashboard_views')
-    redis_status = "🟢 Redis: Online"
-except Exception:
+    
+    # Dynamiczny status - pokazuje czy jesteś w chmurze czy u siebie
+    redis_status = "🟢 Redis: Online (Cloud)" if redis_password else "🟢 Redis: Online (Local)"
+except Exception as e:
     global_views = "Brak połączenia"
     redis_status = "🔴 Redis: Offline"
 
