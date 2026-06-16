@@ -1,9 +1,12 @@
 import streamlit as st
 import data_loader
 import charts
-import time
 import pandas as pd
+import redis
+import hashlib
+import json
 
+# --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="AWS SOC Dash", layout="wide")
 
 st.markdown("""
@@ -14,7 +17,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Zachowane Twoje poprawne wczytywanie pliku skompresowanego!
+# --- POŁĄCZENIE Z REDIS ---
+try:
+    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    r.ping()
+    global_views = r.incr('soc_dashboard_views')
+    redis_status = "🟢 Redis: Online"
+except Exception:
+    global_views = "Brak połączenia"
+    redis_status = "🔴 Redis: Offline"
+
+# --- WCZYTYWANIE DANYCH ---
 df = data_loader.get_processed_data("AWS_Honeypot_marx-geo.csv.gz")
 
 if df.empty:
@@ -22,20 +35,19 @@ if df.empty:
     st.stop()
 
 # --- SIDEBAR: FILTRY ---
-st.sidebar.title("Filtry Ataków")
+st.sidebar.title("🛡️ Panel SOC")
+st.sidebar.markdown("---")
+st.sidebar.caption(redis_status)
+st.sidebar.metric("Globalne wejścia", global_views)
+st.sidebar.markdown("---")
 
-# 1. Filtr daty
 min_d, max_d = df['datetime'].min().date(), df['datetime'].max().date()
-date_range = st.sidebar.date_input("Zakres (DD-MM-YYYY):", value=(min_d, max_d), format="DD-MM-YYYY")
-
-# 2. Filtr godziny (od kolegi)
+date_range = st.sidebar.date_input("Zakres dat:", value=(min_d, max_d), format="DD-MM-YYYY")
 hour_range = st.sidebar.slider("Zakres godzinowy:", min_value=0, max_value=23, value=(0, 23))
 
-# 3. Filtr kraju
 countries = ["Wszystkie"] + sorted(df['country'].unique().tolist())
 selected_country = st.sidebar.selectbox("Wybierz kraj:", countries)
 
-# 4. Filtr rodzaju ataku (od kolegi)
 if 'service' in df.columns:
     attack_types = ["Wszystkie"] + sorted(df['service'].astype(str).unique().tolist())
     attack_col = 'service'
@@ -60,50 +72,52 @@ if selected_attack != "Wszystkie" and attack_col is not None:
 
 f_df = df.loc[mask]
 
-# --- LOGIKA MAPY FLY-TO ---
+# --- LOGIKA MAPY FLY-TO (Sanity Check) ---
 map_lat, map_lon, map_zoom = 20, 0, 1.2
-
 if selected_country != "Wszystkie" and not f_df.empty:
-    # 1. Filtrujemy TYLKO poprawne fizycznie współrzędne
-    valid_coords = f_df[
-        (f_df['latitude'] >= -90) & (f_df['latitude'] <= 90) &
-        (f_df['longitude'] >= -180) & (f_df['longitude'] <= 180)
-    ]
-    
-    # 2. Liczymy średnią tylko z dobrych danych
+    valid_coords = f_df[(f_df['latitude'] >= -90) & (f_df['latitude'] <= 90) & (f_df['longitude'] >= -180) & (f_df['longitude'] <= 180)]
     if not valid_coords.empty:
         map_lat = valid_coords['latitude'].mean()
         map_lon = valid_coords['longitude'].mean()
         map_zoom = 4
         st.sidebar.info(f"Fly-to: {selected_country}")
     else:
-        st.sidebar.warning("Adresy z tego regionu mają uszkodzone dane GPS w logach.")
+        st.sidebar.warning("⚠️ Uszkodzone dane GPS w tym rejonie.")
 
-# --- GŁÓWNY DASHBOARD ---
 st.title("Wywiad zagrożeń AWS Honeypot")
 
 # --- ALERTY BEZPIECZEŃSTWA ---
 if not f_df.empty:
     total_attacks = len(f_df)
-    
-    # Reguła 1: Wykrywanie dominującego agresora 
     if 'src' in f_df.columns:
         top_ip = f_df['src'].value_counts().head(1)
-        if not top_ip.empty:
-            ip_count = top_ip.values[0]
-            ip_addr = top_ip.index[0]
-            if (ip_count / total_attacks) > 0.4 and total_attacks > 10:
-                st.error(f"🚨 **Krytyczny Alert:** Adres IP **{ip_addr}** odpowiada za ponad 40% widocznych ataków ({ip_count} uderzeń). Możliwy zmasowany atak Brute-Force!")
+        if not top_ip.empty and (top_ip.values[0] / total_attacks) > 0.4 and total_attacks > 10:
+            st.error(f"🚨 **Krytyczny Alert:** Adres IP **{top_ip.index[0]}** generuje >40% ataków ({top_ip.values[0]} uderzeń). Możliwy Brute-Force!")
     
-    # Reguła 2: Wykrywanie kampanii na porty zarządzania (SSH/RDP)
     if attack_col is not None:
         ssh_rdp_mask = f_df[attack_col].astype(str).str.contains('ssh|rdp|22|3389', case=False, na=False)
-        ssh_rdp_count = ssh_rdp_mask.sum()
-        if (ssh_rdp_count / total_attacks) > 0.5 and total_attacks > 10:
-            st.warning("⚠️ **Ostrzeżenie:** Ponad 50% aktywności w tym oknie czasowym jest wymierzone w porty zdalnego zarządzania (SSH/RDP).")
+        if (ssh_rdp_mask.sum() / total_attacks) > 0.5 and total_attacks > 10:
+            st.warning("⚠️ **Ostrzeżenie:** >50% ruchu wycelowane w porty zarządzania (SSH/RDP).")
 
-# METRYKI 
-total, unique, top_p, top_proto = data_loader.get_kpi_metrics(f_df)
+# --- REDIS CACHE (PAMIĘĆ PODRĘCZNA ZAPYTAŃ) ---
+st.divider()
+st.subheader("⚡ Silnik Optymalizacji Zapytań (Redis Cache)")
+
+filter_signature = f"{selected_country}_{date_range}_{hour_range}_{selected_attack}"
+cache_key = "kpi_cache_" + hashlib.md5(filter_signature.encode()).hexdigest()
+
+try:
+    cached_data = r.get(cache_key)
+    if cached_data:
+        total, unique, top_p, top_proto = json.loads(cached_data)
+        st.success("🟢 Załadowano z pamięci RAM błyskawicznie (Redis Cache Hit)")
+    else:
+        total, unique, top_p, top_proto = data_loader.get_kpi_metrics(f_df)
+        r.setex(cache_key, 3600, json.dumps((total, unique, str(top_p), str(top_proto))))
+        st.info("🟡 Policzono klasycznie i zapisano w cache (Redis Cache Miss)")
+except Exception:
+    total, unique, top_p, top_proto = data_loader.get_kpi_metrics(f_df)
+    st.caption("Redis offline - standardowe obliczenia.")
 
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Łącznie Ataków", f"{total:,}")
@@ -113,46 +127,40 @@ m4.metric("Główny Protokół", top_proto)
 
 st.divider()
 
-# MAPA
+# --- MAPA I WYKRESY ---
 st.pydeck_chart(charts.plot_attack_map(f_df, map_lat, map_lon, map_zoom))
-
 st.divider()
 
-# WYKRESY
 if not f_df.empty:
-    # Nowy trend liniowy od kolegi
     st.plotly_chart(charts.plot_attack_trend(f_df), use_container_width=True)
     st.divider()
-    
     c1, c2 = st.columns(2)
     with c1:
         st.plotly_chart(charts.plot_port_ranking(f_df), use_container_width=True)
     with c2:
         st.plotly_chart(charts.plot_proto_pie(f_df), use_container_width=True)
-    
     st.plotly_chart(charts.plot_time_heatmap(f_df), use_container_width=True)
-else:
-    st.warning("Brak danych dla wybranych filtrów. Zmień filtry w panelu bocznym.")
 
 st.divider()
 
-# SUROWE LOGI I POBIERANIE
-st.subheader("Surowe logi zdarzeń")
-
+# --- SUROWE LOGI ---
 with st.expander("👁️ Pokaż/Ukryj surowe logi zdarzeń", expanded=False):
-    # Wyświetlanie tabeli 
-    if 'src' in f_df.columns:
-        cols = ['src'] + [col for col in f_df.columns if col != 'src']
-        st.dataframe(f_df[cols], use_container_width=True)
-    else:
-        st.dataframe(f_df, use_container_width=True)
-
-    # Generowanie i pobieranie pliku CSV 
+    st.dataframe(f_df, use_container_width=True)
     if not f_df.empty:
-        csv_data = f_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="⬇Pobierz przefiltrowane logi (CSV)",
-            data=csv_data,
-            file_name='wyfiltrowane_ataki_soc.csv',
-            mime='text/csv',
-        )
+        st.download_button(label="⬇️ Pobierz przefiltrowane logi (CSV)", data=f_df.to_csv(index=False).encode('utf-8'), file_name='wyfiltrowane_ataki_soc.csv', mime='text/csv')
+
+# --- REDIS MESSAGE BROKER (BUFOR LOGÓW) ---
+st.divider()
+st.subheader("📡 Bufor Strumieniowy (Kolejka Wiadomości Redis)")
+st.markdown("Symulacja odczytu asynchronicznego z kolejki Message Broker chroniącej przed atakami DDoS.")
+
+try:
+    live_logs = r.lrange("live_soc_buffer", 0, 4)
+    if live_logs:
+        for log in live_logs:
+            st.code(log, language="bash")
+        st.button("🔄 Odśwież kolejkę")
+    else:
+        st.info("Kolejka jest pusta. Uruchom skrypt live_attacks.py w osobnym terminalu.")
+except Exception:
+    st.error("Uruchom serwer Redis, aby włączyć nasłuch strumienia.")

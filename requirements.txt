@@ -3,3 +3,5 @@ numpy
 streamlit
 plotly
 pydeck
+celery
+redis
