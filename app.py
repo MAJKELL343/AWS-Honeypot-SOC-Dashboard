@@ -99,6 +99,7 @@ if selected_country != "Wszystkie" and not f_df.empty:
         st.sidebar.warning("⚠️ Uszkodzone dane GPS w tym rejonie.")
 
 st.title("Wywiad zagrożeń AWS Honeypot")
+st.warning(f"Diagnostyka - Host to: {st.secrets.get('REDIS_HOST', 'BRAK SEKRETÓW!')}")
 
 # --- ALERTY BEZPIECZEŃSTWA ---
 if not f_df.empty:
