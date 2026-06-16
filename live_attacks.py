@@ -2,13 +2,22 @@ import redis
 import time
 import random
 
-print("Uruchamianie generatora logów na żywo (Producent)...")
+print("Uruchamianie generatora logów na żywo dla chmury (Producent)...")
 
 try:
-    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    # Wklej tu DOKŁADNIE swoje dane z Upstash
+    r = redis.Redis(
+        host='https://literate-collie-68924.upstash.io',
+        port=6379,
+        password='gQAAAAAAAQ08AAIgcDE0MWE5NGMzYjU1OTY0ZjRkOTk0MmZiMWY2NjE3Njk1ZA',
+        ssl=True,
+        db=0,
+        decode_responses=True
+    )
     r.ping()
-except Exception:
-    print("BŁĄD: Nie można połączyć z Redisem. Upewnij się, że redis-server.exe działa!")
+    print("Połączono z chmurą Upstash pomyślnie!")
+except Exception as e:
+    print(f"BŁĄD: Nie można połączyć z Redisem w chmurze. {e}")
     exit()
 
 kraje = ["RU", "CN", "BR", "US", "IR", "KP", "VN"]
